@@ -10,6 +10,7 @@
 #import "Test.h"
 #import "MYLogging.h"
 #import <libkern/OSAtomic.h>
+#import <pthread.h>
 
 
 #if !__has_feature(objc_arc)
@@ -26,20 +27,20 @@
 @implementation NSObject (MYBlockUtils)
 
 - (void) my_run_as_block {
-    ((void (^)())self)();
+    ((void (^)(void))self)();
 }
 
 @end
 
 
-void MYAfterDelay( NSTimeInterval delay, void (^block)() ) {
+void MYAfterDelay( NSTimeInterval delay, void (^block)(void) ) {
     block = [block copy];
     [block performSelector: @selector(my_run_as_block)
                 withObject: nil
                 afterDelay: delay];
 }
 
-id MYAfterDelayInModes( NSTimeInterval delay, NSArray* modes, void (^block)() ) {
+id MYAfterDelayInModes( NSTimeInterval delay, NSArray* modes, void (^block)(void) ) {
     block = [block copy];
     [block performSelector: @selector(my_run_as_block)
                 withObject: nil
@@ -55,7 +56,7 @@ void MYCancelAfterDelay( id block ) {
 }
 
 
-static void MYOnThreadWaiting( NSThread* thread, BOOL waitUntilDone, void (^block)()) {
+static void MYOnThreadWaiting( NSThread* thread, BOOL waitUntilDone, void (^block)(void)) {
     block = [block copy];
     [block performSelector: @selector(my_run_as_block)
                   onThread: thread
@@ -64,16 +65,16 @@ static void MYOnThreadWaiting( NSThread* thread, BOOL waitUntilDone, void (^bloc
 }
 
 
-void MYOnThread( NSThread* thread, void (^block)()) {
+void MYOnThread( NSThread* thread, void (^block)(void)) {
     MYOnThreadWaiting(thread, NO, block);
 }
 
-void MYOnThreadSynchronously( NSThread* thread, void (^block)()) {
+void MYOnThreadSynchronously( NSThread* thread, void (^block)(void)) {
     MYOnThreadWaiting(thread, YES, block);
 }
 
 
-void MYOnThreadInModes( NSThread* thread, NSArray* modes, BOOL waitUntilDone, void (^block)()) {
+void MYOnThreadInModes( NSThread* thread, NSArray* modes, BOOL waitUntilDone, void (^block)(void)) {
     block = [block copy];
     [block performSelector: @selector(my_run_as_block)
                   onThread: thread
@@ -83,7 +84,7 @@ void MYOnThreadInModes( NSThread* thread, NSArray* modes, BOOL waitUntilDone, vo
 }
 
 
-BOOL MYWaitFor( NSString* mode, BOOL (^block)() ) {
+BOOL MYWaitFor( NSString* mode, BOOL (^block)(void) ) {
     if (block())
         return YES;
 
@@ -120,16 +121,24 @@ dispatch_block_t MYThrottledBlock(NSTimeInterval minInterval, dispatch_block_t b
 
 dispatch_block_t MYBatchedBlock(NSTimeInterval minInterval,
                                 dispatch_queue_t queue,
-                                void (^block)())
+                                void (^block)(void))
 {
-    __block uint8_t scheduled = 0;
+    
+    __block BOOL scheduled = 0;
+    NSObject *mutex = [[NSObject alloc] init];
     block = [block copy];
     dispatch_block_t batched = ^{
-        uint8_t wasScheduled = OSAtomicTestAndSetBarrier(0, &scheduled);
+        BOOL wasScheduled = FALSE;
+        @synchronized (mutex) {
+            wasScheduled = scheduled;
+            scheduled = TRUE;
+        }
         if (!wasScheduled) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(minInterval * NSEC_PER_SEC)),
                            queue, ^{
-                OSAtomicTestAndClearBarrier(0, &scheduled);
+                @synchronized (mutex) {
+                    scheduled = FALSE;
+                }
                 block();
             });
         }
